@@ -96,7 +96,7 @@ struct Token {
 };
 int isoperator(char c) {
   if (c == '+' || c == '-' || c == '*' || c == '/' || c == '=' || c == '>' ||
-      c == '<' || c == '!' || c == ',')
+      c == '<' || c == '!' || c == ',' || c == '?' || c == ':')
     return 1;
   return 0;
 }
@@ -262,9 +262,9 @@ typedef enum {
   NODE_FLOAT,
   NODE_STR,
   NODE_IDENTIFIER,
-  // operator
-  NODE_ADD,
-  NODE_SUB,
+  // binary operator
+  NODE_ADD, // sometimes unary
+  NODE_SUB, // sometimes unary
   NODE_DIV,
   NODE_MUL,
   NODE_ASSIGN,
@@ -272,10 +272,16 @@ typedef enum {
   NODE_EQ,
   NODE_GT,
   NODE_LT,
-  NODE_NOT,
   NODE_NEQ,
   NODE_GEQ,
   NODE_LEQ,
+
+  // unary operator
+  NODE_NOT,
+
+  // ternery operator
+  NODE_QM,
+  NODE_COLON,
 
   // parentheses
   NODE_LPAREN,
@@ -336,6 +342,10 @@ Node *Node_token(Token *token, Region *region) {
       node->ndtyp = NODE_GEQ;
     if (String_equal(token->str, (String){.cstr = "<=", .len = 2}))
       node->ndtyp = NODE_LEQ;
+    if (String_equal(token->str, (String){.cstr = "?", .len = 1}))
+      node->ndtyp = NODE_QM;
+    if (String_equal(token->str, (String){.cstr = ":", .len = 1}))
+      node->ndtyp = NODE_COLON;
     break;
   case TOKEN_PAREN:
     if (strncmp(token->str.cstr, "(", token->str.len) == 0)
@@ -433,6 +443,10 @@ Bind Node_bindpw(Node *node) {
   case NODE_EQ:
   case NODE_NEQ:
     return (Bind){.lhs = 9, .rhs = 10};
+  case NODE_QM:
+    return (Bind){.lhs = 4, .rhs = 3};
+  case NODE_COLON:
+    return (Bind){.lhs = 4, .rhs = 3};
   }
   return (Bind){.lhs = 0, .rhs = 0};
 }
@@ -629,9 +643,27 @@ Node *Hashmap_find(Hashmap *hm, Region *region, String var) {
 }
 
 Node *Node_eval(Node *root, Region *region, Hashmap *hm) {
-  if (root == NULL)
-    return NULL;
+  if (root == NULL) {
+    Node *node = region_alloc(sizeof(Region), region);
+    node->token = region_alloc(sizeof(Token), region);
+    node->ndtyp = NODE_NIL;
+    return node;
+  }
   switch (root->ndtyp) {
+  case NODE_QM: {
+    Node *node = region_alloc(sizeof(Node), region);
+    node->token = region_alloc(sizeof(Token), region);
+    if (root->rhs->ndtyp != NODE_COLON) {
+      node->ndtyp = NODE_NIL;
+      return node;
+    }
+    Node *cond = Node_eval(root->lhs, region, hm);
+    return cond->token->ival ? Node_eval(root->rhs->lhs, region, hm)
+                             : Node_eval(root->rhs->rhs, region, hm);
+  } break;
+
+    //
+    //
   case NODE_NOT: {
     Node *node = region_alloc(sizeof(Node), region);
     node->token = region_alloc(sizeof(Token), region);
@@ -639,7 +671,8 @@ Node *Node_eval(Node *root, Region *region, Hashmap *hm) {
     if (root->lhs == NULL) {
       Node *val_node = Node_eval(root->rhs, region, hm);
       if (val_node == NULL) {
-        return NULL;
+        node->ndtyp = NODE_NIL;
+        return node;
       }
       double fval = !val_node->token->fval;
       node->token->fval = fval;
@@ -809,7 +842,8 @@ Node *Node_eval(Node *root, Region *region, Hashmap *hm) {
     if (root->lhs == NULL) {
       Node *val_node = Node_eval(root->rhs, region, hm);
       if (val_node == NULL) {
-        return NULL;
+        node->ndtyp = NODE_NIL;
+        return node;
       }
       double fval = val_node->token->fval;
       node->token->fval = fval;
@@ -865,7 +899,8 @@ Node *Node_eval(Node *root, Region *region, Hashmap *hm) {
     if (lhs_node->ndtyp == NODE_STR || rhs_node->ndtyp == NODE_STR) {
       printf("[EVALUATION ERROR]: string does not support this "
              "operator\n");
-      return NULL;
+      node->ndtyp = NODE_NIL;
+      return node;
     }
     if (lhs_node->ndtyp == NODE_INT && rhs_node->ndtyp == NODE_INT) {
       node->ndtyp = NODE_INT;
@@ -893,7 +928,8 @@ Node *Node_eval(Node *root, Region *region, Hashmap *hm) {
     if (lhs_node->ndtyp == NODE_STR || rhs_node->ndtyp == NODE_STR) {
       printf("[EVALUATION ERROR]: string does not support this "
              "operator\n");
-      return NULL;
+      node->ndtyp = NODE_NIL;
+      return node;
     }
     if (lhs_node->ndtyp == NODE_INT && rhs_node->ndtyp == NODE_INT) {
       node->ndtyp = NODE_INT;
@@ -936,7 +972,8 @@ Node *Node_eval(Node *root, Region *region, Hashmap *hm) {
     if (lhs_node->ndtyp == NODE_STR || rhs_node->ndtyp == NODE_STR) {
       printf("[EVALUATION ERROR]: string does not support this "
              "operator\n");
-      return NULL;
+      node->ndtyp = NODE_NIL;
+      return node;
     }
     if (lhs_node->ndtyp == NODE_INT && rhs_node->ndtyp == NODE_INT) {
       node->ndtyp = NODE_INT;
@@ -951,7 +988,9 @@ Node *Node_eval(Node *root, Region *region, Hashmap *hm) {
   case NODE_ASSIGN: {
     if (root->lhs->ndtyp != NODE_IDENTIFIER) {
       printf("[EVALUATION ERROR]: not assignable\n");
-      return NULL;
+      Node *node = region_alloc(sizeof(Region), region);
+      node->ndtyp = NODE_NIL;
+      return node;
     }
     Node *rval = Node_eval(root->rhs, region, hm);
     Hashmap_append(hm, root->lhs->token->str,
@@ -976,7 +1015,10 @@ Node *Node_eval(Node *root, Region *region, Hashmap *hm) {
 
   //
   //
-  return NULL;
+  Node *node = region_alloc(sizeof(Region), region);
+  node->token = region_alloc(sizeof(Token), region);
+  node->ndtyp = NODE_NIL;
+  return node;
 }
 void Node_eval_print(Node *node) {
   if (!node) {
@@ -1047,7 +1089,7 @@ int main(int argc, char **argv) {
     Node_eval_print(Node_eval(ast, &region, &hm));
   }
 
-  root = tokenize("1.0==1", &region);
+  root = tokenize("a==b ? 0:1", &region);
   tmp = root;
   ast = pratt_parsing(&tmp, &region, 0);
   Node_print_detail(ast, 1);
